@@ -19,7 +19,7 @@ u32 native_tv_mode;
 
 void dma_read_s(void * ram_address, unsigned long pi_address, unsigned long len) {
 
-    u32 buff[256];
+    u32 __attribute__((aligned(16))) buff[256];
    
     u32 *bptr;
     
@@ -47,7 +47,7 @@ void dma_read_s(void * ram_address, unsigned long pi_address, unsigned long len)
     }
 }
 
-void dma_write_s(void * ram_address, unsigned long pi_address, unsigned long len) {
+void dma_write_s(const void * ram_address, unsigned long pi_address, unsigned long len) {
 	
 	
 	//if(len==32768)

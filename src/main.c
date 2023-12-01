@@ -48,14 +48,18 @@
 #include "memorypak.h"
 #include "menu.h"
 #include "cic.h"
+#include "diskio.h"
+#include "debug.h"
 
 #define ED64PLUS
 
-#ifdef ED64PLUS
-#define ED64_FIRMWARE_PATH "ED64P"
-#else
-#define ED64_FIRMWARE_PATH "ED64"
-#endif
+#define CART_EMU_FW_PATH "DD64EC" // TODO this needs to happen at runtime.
+
+//#ifdef ED64PLUS
+//#define CART_EMU_FW_PATH "ED64P"
+//#else
+//#define CART_EMU_FW_PATH "ED64"
+//#endif
 
 #ifdef USE_TRUETYPE
 #define STB_TRUETYPE_IMPLEMENTATION
@@ -79,6 +83,8 @@ typedef struct glyph glyph_t;
 glyph_t sans[96];
 glyph_t serif[96];
 #endif
+
+void AltraDiskInit(void);
 
 typedef struct
 {
@@ -123,7 +129,7 @@ unsigned int gBootCic = CIC_6102;
 static void *bg_buffer;
 void *__safe_bg_buffer;
 
-#define __get_buffer(x) __safe_buffer[(x)-1]
+#define __get_buffer(x) __safe_buffer[((int)x)-1]
 extern uint32_t __bitdepth;
 extern uint32_t __width;
 extern uint32_t __height;
@@ -151,6 +157,8 @@ u16 cursor_history_pos = 0;
 
 u8 empty = 0;
 int mp3playing = 0;
+int idlecount = 0;
+int filescroll = 0;
 
 FATFS *fs;
 
@@ -192,7 +200,7 @@ int save_after_reboot = 0;
 unsigned char cartID[4];
 char curr_dirname[64];
 char pwd[64];
-TCHAR rom_filename[256];
+TCHAR rom_filename[265];
 
 u32 rom_buff[128]; //rom buffer
 u8 *rom_buff8;     //rom buffer
@@ -206,7 +214,7 @@ short int gCheats = 0; /* 0 = off, 1 = select, 2 = all */
 short int force_tv = 0;
 short int boot_country = 0;
 
-static resolution_t res = RESOLUTION_320x240;
+const resolution_t resolution = RESOLUTION_320x240;
 
 //background sprites
 sprite_t *loadPng(u8 *png_filename);
@@ -237,7 +245,7 @@ u8 bgm_on = 0;
 u8 page_display = 0;
 u8 tv_mode = 0; // 1=ntsc 2=pal 3=mpal 0=default automatic
 u8 quick_boot = 0;
-u8 enable_colored_list = 0;
+u8 enable_colored_list = 1;
 u8 cd_behaviour = 0;     //0=first entry 1=last entry
 u8 scroll_behaviour = 0; //1=classic 0=new page-system
 u8 ext_type = 0;         //0=classic 1=org os
@@ -444,7 +452,7 @@ void display_dir(direntry_t *list, int cursor, int page, int max, int count, dis
     uint32_t forecolor = 0;
     uint32_t forecolor_menu = 0;
     uint32_t backcolor;
-    backcolor = graphics_make_color(0x00, 0x00, 0x00, 0x00);      //bg
+    backcolor = graphics_make_color(0x80, 0x80, 0x80, 0x80);      //bg
     forecolor_menu = graphics_make_color(0xFF, 0xFF, 0xFF, 0xFF); //fg
 
     graphics_set_color(list_font_color, backcolor);
@@ -515,7 +523,6 @@ void display_dir(direntry_t *list, int cursor, int page, int max, int count, dis
         {
             char tmpdir[(CONSOLE_WIDTH - 5) + 1];
             strncpy(tmpdir, list[i].filename, CONSOLE_WIDTH - 5);
-
             tmpdir[CONSOLE_WIDTH - 5] = 0;
 
             char *dir_str;
@@ -579,7 +586,23 @@ void display_dir(direntry_t *list, int cursor, int page, int max, int count, dis
                 forecolor = list_font_color;
 
             char tmpdir[(CONSOLE_WIDTH - 3) + 1];
-            strncpy(tmpdir, list[i].filename, CONSOLE_WIDTH - 3);
+            if (i == cursor) {
+                int textOffset = 0;
+                int namelen = strlen(list[i].filename);
+                int rest = (namelen - 33);
+                if (namelen > 33) {
+                    textOffset = (filescroll % (rest * 2));
+                    if (textOffset > rest) {
+                        textOffset -= rest;
+                        textOffset = rest - textOffset;
+                    }
+                }
+
+                strncpy(tmpdir, list[i].filename + textOffset, CONSOLE_WIDTH - 3);
+            } else {
+                strncpy(tmpdir, list[i].filename, CONSOLE_WIDTH - 3);
+            }
+
             tmpdir[CONSOLE_WIDTH - 3] = 0;
 
             char *dir_str;
@@ -866,6 +889,7 @@ void configure()
     u16 firm;
 
     evd_init();
+    
     //REG_MAX_MSG
     evd_setCfgBit(ED_CFG_SDRAM_ON, 0);
     dma_read_s(buff, ROM_ADDR + 0x20, 16);
@@ -873,7 +897,6 @@ void configure()
     evd_setCfgBit(ED_CFG_SDRAM_ON, 1);
 
     firm = evd_getFirmVersion();
-
     if (firm >= 0x0200)
     {
         sleep(1);
@@ -910,15 +933,16 @@ void configure()
         evd_setCfgBit(ED_CFG_SDRAM_ON, 1);
     }
 
-    if (streql("ED64 SD boot", buff, 12) && firm >= 0x0116) //TODO: can this be moved before the firmware is loaded?
-    {
+    //if (streql("ED64 SD boot", buff, 12) && firm >= 0x0116) //TODO: can this be moved before the firmware is loaded?
+    //{
         sdSetInterface(DISK_IFACE_SD);
-    }
-    else
-    {
-        sdSetInterface(DISK_IFACE_SPI);
-    }
+    //}
+    //else
+    //{
+    //    sdSetInterface(DISK_IFACE_SPI);
+    //}
     memSpiSetDma(0);
+    AltraDiskInit();
 }
 
 //rewrites the background and the box to clear the screen
@@ -930,14 +954,14 @@ void clearScreen(display_context_t disp)
 
 void romInfoScreen(display_context_t disp, u8 *buff, int silent)
 {
-    TCHAR filename[64];
+    TCHAR filename[265];
     sprintf(filename, "%s", buff);
 
     int swapped = 0;
 
     FRESULT result;
 
-    int fsize = 512;                 //rom-headersize 4096 but the bootcode is not needed
+    int fsize = 0x1000;                 //rom-headersize 4096 but the bootcode is not needed
     unsigned char headerdata[fsize]; //1*512
 
     FIL file;
@@ -1033,11 +1057,11 @@ void romInfoScreen(display_context_t disp, u8 *buff, int silent)
 
         if (silent != 1)
         {
-            char box_path[32];
+            TCHAR box_path[32];
 
             sprite_t *n64cover;
 
-            sprintf(box_path, "/"ED64_FIRMWARE_PATH"/boxart/lowres/%c%c.png", headerdata[0x3C], headerdata[0x3D]);
+            sprintf(box_path, "/"CART_EMU_FW_PATH"/boxart/lowres/%c%c.png", headerdata[0x3C], headerdata[0x3D]);
 
             FILINFO fnoba;
             result = f_stat (box_path, &fnoba);
@@ -1045,7 +1069,7 @@ void romInfoScreen(display_context_t disp, u8 *buff, int silent)
             if (result != FR_OK)
             {
                 //not found
-                sprintf(box_path, "/"ED64_FIRMWARE_PATH"/boxart/lowres/00.png");
+                sprintf(box_path, "/"CART_EMU_FW_PATH"/boxart/lowres/00.png");
             }
 
             n64cover = loadPng(box_path);
@@ -1107,49 +1131,50 @@ void loadgbrom(display_context_t disp, TCHAR *rom_path)
     FRESULT result;
     FIL emufile;
     UINT emubytesread;
-    result = f_open(&emufile, "/"ED64_FIRMWARE_PATH"/gb.v64", FA_READ);
+    result = f_open(&emufile, "/"CART_EMU_FW_PATH"/gb.z64", FA_READ);
 
     if (result == FR_OK)
     {
-        int emufsize = f_size(&emufile);
-        //load gb emulator
-        result =
-        f_read (
-            &emufile,        /* [IN] File object */
-            (void *)0xb0000000,  /* [OUT] Buffer to store read data */
-            emufsize,         /* [IN] Number of bytes to read */
-            &emubytesread    /* [OUT] Number of bytes read */
-        );
-
+        //int emufsize = f_size(&emufile);
+        ////load gb emulator
+        //result =
+        //f_read (
+        //    &emufile,        /* [IN] File object */
+        //    (void *)0xb0000000,  /* [OUT] Buffer to store read data */
+        //    emufsize,         /* [IN] Number of bytes to read */
+        //    &emubytesread    /* [OUT] Number of bytes read */
+        //);
+//
         f_close(&emufile);
 
         //load gb rom
-        FIL romfile;
-        UINT rombytesread;
-        result = f_open(&romfile, rom_path, FA_READ);
-
-        if (result == FR_OK)
-        {
-            int romfsize = f_size(&romfile);
-
-            result =
-            f_read (
-                &romfile,        /* [IN] File object */
-                (void *)0xb0200000,  /* [OUT] Buffer to store read data */
-                romfsize,         /* [IN] Number of bytes to read */
-                &rombytesread    /* [OUT] Number of bytes read */
-            );
-
-            f_close(&romfile);
-
+        //FIL romfile;
+        //UINT rombytesread;
+        //result = f_open(&romfile, rom_path, FA_READ);
+//
+        //if (result == FR_OK)
+        //{
+        //    int romfsize = f_size(&romfile);
+//
+        //    result =
+        //    f_read (
+        //        &romfile,        /* [IN] File object */
+        //        (void *)0xb0200000,  /* [OUT] Buffer to store read data */
+        //        romfsize,         /* [IN] Number of bytes to read */
+        //        &rombytesread    /* [OUT] Number of bytes read */
+        //    );
+//
+        //    f_close(&romfile);
+//
             boot_cic = CIC_6102;
             boot_save = 5; //flash
             force_tv = 0;  //no force
             cheats_on = 0; //cheats off
             checksum_fix_on = 0;
 
-            bootRom(disp, 1);
-        }
+            printText("Rom loaded", 3, -1, disp);
+            bootRom(disp, 1, rom_path, "/"CART_EMU_FW_PATH"/gb.z64\0\0\0\0", 0, 0x00200000);
+        //}
     }
 }
 
@@ -1182,43 +1207,41 @@ void loadggrom(display_context_t disp, TCHAR *rom_path) //TODO: this could be me
             FRESULT result;
             FIL file;
             UINT bytesread;
-            result = f_open(&file, "/"ED64_FIRMWARE_PATH"/UltraSMS.z64", FA_READ);
+            result = f_open(&file, "/"CART_EMU_FW_PATH"/UltraSMS.v64", FA_READ);
 
             if (result == FR_OK)
             {
                 int fsize = f_size(&file);
 
 
-                result =
-                f_read (
-                    &file,        /* [IN] File object */
-                    (void *)0xb0000000,      /* [OUT] Buffer to store read data */
-                    fsize,        /* [IN] Number of bytes to read */
-                    &bytesread    /* [OUT] Number of bytes read */
-                );
-
+                //result =
+                //f_read (
+                //    &file,        /* [IN] File object */
+                //    (void *)0xb0000000,      /* [OUT] Buffer to store read data */
+                //    fsize,        /* [IN] Number of bytes to read */
+                //    &bytesread    /* [OUT] Number of bytes read */
+                //);
+//
                 f_close(&file);
-
-
-                romresult =
-                f_read (
-                    &romfile,           /* [IN] File object */
-                    (void *)0xb0000000 + 0x1b410,  /* [OUT] Buffer to store read data */ //TODO: why is the offset this particular number
-                    romfsize,           /* [IN] Number of bytes to read */
-                    &rombytesread       /* [OUT] Number of bytes read */
-                );
-
-                f_close(&romfile);
+//
+//
+                //romresult =
+                //f_read (
+                //    &romfile,           /* [IN] File object */
+                //    (void *)0xb0000000 + 0x1b410,  /* [OUT] Buffer to store read data */
+                //    romfsize,           /* [IN] Number of bytes to read */
+                //    &rombytesread       /* [OUT] Number of bytes read */
+                //);
+//
+                //f_close(&romfile);
 
 
                 boot_cic = CIC_6102;
                 boot_save = 0; //save off/cpak
                 force_tv = 0;  //no force
                 cheats_on = 0; //cheats off
-                checksum_fix_on = 0;
-
-                checksum_sdram();
-                bootRom(disp, 1);
+                checksum_fix_on = 1;
+                bootRom(disp, 1, rom_path, "/"CART_EMU_FW_PATH"/UltraSMS.v64", 0, 0x1b410);
             }
         }
     }
@@ -1236,11 +1259,11 @@ void loadmsx2rom(display_context_t disp, TCHAR *rom_path)
         int romfsize = f_size(&romfile);
 
         //max 128KB rom
-        if (romfsize > 128 * 1024)
+        if (romfsize > 2 * 128 * 1024)
         {
             //error
 
-            drawShortInfoBox(disp, "  error: rom > 512KB", 1);
+            drawShortInfoBox(disp, "  error: rom > 256KB", 1);
             input_mapping = abort_screen;
 
             return;
@@ -1252,43 +1275,41 @@ void loadmsx2rom(display_context_t disp, TCHAR *rom_path)
             FRESULT result;
             FIL file;
             UINT bytesread;
-            result = f_open(&file, "/"ED64_FIRMWARE_PATH"/ultraMSX2.z64", FA_READ);
+            result = f_open(&file, "/"CART_EMU_FW_PATH"/ultraMSX2.v64", FA_READ);
 
             if (result == FR_OK)
             {
                 int fsize = f_size(&file);
 
 
-                result =
-                f_read (
-                    &file,        /* [IN] File object */
-                    (void *)0xb0000000,      /* [OUT] Buffer to store read data */
-                    fsize,        /* [IN] Number of bytes to read */
-                    &bytesread    /* [OUT] Number of bytes read */
-                );
-
+                //result =
+                //f_read (
+                //    &file,        /* [IN] File object */
+                //    (void *)0xb0000000,      /* [OUT] Buffer to store read data */
+                //    fsize,        /* [IN] Number of bytes to read */
+                //    &bytesread    /* [OUT] Number of bytes read */
+                //);
+//
                 f_close(&file);
-
-
-                romresult =
-                f_read (
-                    &romfile,           /* [IN] File object */
-                    (void *)0xb0000000 + 0x2df48,  /* [OUT] Buffer to store read data */ //TODO: why is the offset this particular number
-                    romfsize,           /* [IN] Number of bytes to read */
-                    &rombytesread       /* [OUT] Number of bytes read */
-                );
-
-                f_close(&romfile);
+//
+//
+                //romresult =
+                //f_read (
+                //    &romfile,           /* [IN] File object */
+                //    (void *)0xb0000000 + 0x2df48,  /* [OUT] Buffer to store read data */
+                //    romfsize,           /* [IN] Number of bytes to read */
+                //    &rombytesread       /* [OUT] Number of bytes read */
+                //);
+//
+                //f_close(&romfile);
 
 
                 boot_cic = CIC_6102;
                 boot_save = 0; //save off/cpak
                 force_tv = 0;  //no force
                 cheats_on = 0; //cheats off
-                checksum_fix_on = 0;
-
-                checksum_sdram();
-                bootRom(disp, 1);
+                checksum_fix_on = 1;
+                bootRom(disp, 1, rom_path, "/"CART_EMU_FW_PATH"/ultraMSX2.v64", 0, 0x2df48);
             }
         }
     }
@@ -1299,40 +1320,40 @@ void loadnesrom(display_context_t disp, TCHAR *rom_path)
     FRESULT result;
     FIL emufile;
     UINT emubytesread;
-    result = f_open(&emufile, "/"ED64_FIRMWARE_PATH"/neon64bu.rom", FA_READ);
+    result = f_open(&emufile, "/"CART_EMU_FW_PATH"/neon64bu.rom", FA_READ);
 
     if (result == FR_OK)
     {
-        int emufsize = f_size(&emufile);
-        //load nes emulator
-        result =
-        f_read (
-            &emufile,        /* [IN] File object */
-            (void *)0xb0000000,  /* [OUT] Buffer to store read data */
-            emufsize,         /* [IN] Number of bytes to read */
-            &emubytesread    /* [OUT] Number of bytes read */
-        );
-
+        //int emufsize = f_size(&emufile);
+        ////load nes emulator
+        //result =
+        //f_read (
+        //    &emufile,        /* [IN] File object */
+        //    (void *)0xb0000000,  /* [OUT] Buffer to store read data */
+        //    emufsize,         /* [IN] Number of bytes to read */
+        //    &emubytesread    /* [OUT] Number of bytes read */
+        //);
+//
         f_close(&emufile);
 
         //load nes rom
-        FIL romfile;
-        UINT rombytesread;
-        result = f_open(&romfile, rom_path, FA_READ);
-
-        if (result == FR_OK)
-        {
-            int romfsize = f_size(&romfile);
-
-            result =
-            f_read (
-                &romfile,        /* [IN] File object */
-                (void *)0xb0200000,  /* [OUT] Buffer to store read data */
-                romfsize,         /* [IN] Number of bytes to read */
-                &rombytesread    /* [OUT] Number of bytes read */
-            );
-
-            f_close(&romfile);
+        //FIL romfile;
+        //UINT rombytesread;
+        //result = f_open(&romfile, rom_path, FA_READ);
+//
+        //if (result == FR_OK)
+        //{
+            //int romfsize = f_size(&romfile);
+//
+            //result =
+            //f_read (
+            //    &romfile,        /* [IN] File object */
+            //    (void *)0xb0200000,  /* [OUT] Buffer to store read data */
+            //    romfsize,         /* [IN] Number of bytes to read */
+            //    &rombytesread    /* [OUT] Number of bytes read */
+            //);
+//
+            //f_close(&romfile);
 
             boot_cic = CIC_6102;
             boot_save = 2; //SRAM
@@ -1340,7 +1361,45 @@ void loadnesrom(display_context_t disp, TCHAR *rom_path)
             cheats_on = 0; //cheats off
             checksum_fix_on = 0;
 
-            bootRom(disp, 1);
+            bootRom(disp, 1, rom_path, "/"CART_EMU_FW_PATH"/neon64bu.rom", 0, 0x00200000);
+        //}
+    }
+}
+
+void loadsnesrom(display_context_t disp, TCHAR *rom_path)
+{
+    FRESULT result;
+    FIL emufile;
+    UINT emubytesread;
+    result = f_open(&emufile, "/"CART_EMU_FW_PATH"/sodium64.z64", FA_READ);
+
+    if (result == FR_OK)
+    {
+        f_close(&emufile);
+
+        //load snes rom
+        FIL romfile;
+        UINT rombytesread;
+        result = f_open(&romfile, rom_path, FA_READ);
+        if (result == FR_OK)
+        {
+            int romfsize = f_size(&romfile);
+            f_close(&romfile);
+
+            boot_cic = CIC_6102;
+            boot_save = 2; //SRAM
+            force_tv = 1;  //no force
+            cheats_on = 0; //cheats off
+            checksum_fix_on = 0;
+
+            uint32_t Offset = 0x104000;
+
+            // Check if there is a header that needs to be removed.
+            if ((romfsize & 0x3FF) == 0x200) {
+                Offset -= 0x200;
+            }
+
+            bootRom(disp, 1, rom_path, "/"CART_EMU_FW_PATH"/sodium64.z64\0\0\0\0", 0, Offset);
         }
     }
 }
@@ -1348,24 +1407,21 @@ void loadnesrom(display_context_t disp, TCHAR *rom_path)
 //load a z64/v64/n64 rom to the sdram
 void loadrom(display_context_t disp, u8 *buff, int fast)
 {
-    clearScreen(disp);
-    display_show(disp);
-
     printText("Loading ROM, Please wait:", 3, 4, disp);
 
-    TCHAR filename[64];
+    TCHAR filename[265];
     sprintf(filename, "%s", buff);
+    printText(filename, 3, 10, disp);
 
     FRESULT result;
     FIL file;
     UINT bytesread = 0;
     result = f_open(&file, filename, FA_READ);
-
     if (result == FR_OK)
     {
         int swapped = 0;
-        int headerfsize = 512; //rom-headersize 4096 but the bootcode is not needed
-        unsigned char headerdata[headerfsize]; //1*512
+        int headerfsize = 0x1000; //rom-headersize 4096 but the bootcode is not needed
+        unsigned char headerdata[headerfsize];
         int fsize = f_size(&file);
         int fsizeMB = fsize /1048576; //Bytes in a MB
 
@@ -1378,7 +1434,6 @@ void loadrom(display_context_t disp, u8 *buff, int fast)
         );
 
         f_close(&file);
-
         int sw_type = is_valid_rom(headerdata);
 
         if (sw_type != 0)
@@ -1416,7 +1471,6 @@ void loadrom(display_context_t disp, u8 *buff, int fast)
         }
 
         int cic, save;
-
         cic = get_cic(&headerdata[0x40]);
 
         unsigned char cartID_short[4];
@@ -1473,37 +1527,37 @@ void loadrom(display_context_t disp, u8 *buff, int fast)
         }
 
         bytesread = 0;
-        result = f_open(&file, filename, FA_READ);
-        if (fsizeMB <= 32)
-        {
-            result =
-            f_read (
-                &file,        /* [IN] File object */
-                (void *)0xb0000000,  /* [OUT] Buffer to store read data */
-                fsize,        /* [IN] Number of bytes to read */
-                &bytesread    /* [OUT] Number of bytes read */
-            );
-        }
-        else
-        {
-            result =
-            f_read (
-                &file,        /* [IN] File object */
-                (void *)0xb0000000,  /* [OUT] Buffer to store read data */
-                32 * 1048576,        /* [IN] Number of bytes to read */
-                &bytesread    /* [OUT] Number of bytes read */
-            );
-            if(result == FR_OK)
-            {
-                result =
-                f_read (
-                    &file,        /* [IN] File object */
-                    (void *)0xb2000000,  /* [OUT] Buffer to store read data */
-                    fsize - bytesread,        /* [IN] Number of bytes to read */
-                    &bytesread    /* [OUT] Number of bytes read */
-                );
-            }
-        }
+        //result = f_open(&file, filename, FA_READ);
+        //if (fsizeMB <= 32)
+        //{
+        //    result =
+        //    f_read (
+        //        &file,        /* [IN] File object */
+        //        (void *)0xb0000000,  /* [OUT] Buffer to store read data */
+        //        fsize,        /* [IN] Number of bytes to read */
+        //        &bytesread    /* [OUT] Number of bytes read */
+        //    );
+        //}
+        //else
+        //{
+        //    result =
+        //    f_read (
+        //        &file,        /* [IN] File object */
+        //        (void *)0xb0000000,  /* [OUT] Buffer to store read data */
+        //        32 * 1048576,        /* [IN] Number of bytes to read */
+        //        &bytesread    /* [OUT] Number of bytes read */
+        //    );
+        //    if(result == FR_OK)
+        //    {
+        //        result =
+        //        f_read (
+        //            &file,        /* [IN] File object */
+        //            (void *)0xb2000000,  /* [OUT] Buffer to store read data */
+        //            fsize - bytesread,        /* [IN] Number of bytes to read */
+        //            &bytesread    /* [OUT] Number of bytes read */
+        //        );
+        //    }
+        //}
 
         if(result == FR_OK)
         {
@@ -1518,7 +1572,7 @@ void loadrom(display_context_t disp, u8 *buff, int fast)
             }
             else
             {
-                bootRom(disp, 1);
+                bootRom(disp, 1, filename, NULL, 0, 0);
             }
         }
         else
@@ -1532,7 +1586,7 @@ int backupSaveData(display_context_t disp)
 {
     //backup cart-save on sd after reboot
     TCHAR config_file_path[32];
-    sprintf(config_file_path, "/"ED64_FIRMWARE_PATH"/%s/LASTROM.CFG", save_path);
+    sprintf(config_file_path, "/"CART_EMU_FW_PATH"/%s/LASTROM.CFG", save_path);
 
     u8 save_format;
     u8 cfg_data[2]; //TODO: this should be a strut?
@@ -1647,7 +1701,7 @@ int saveTypeFromSd(display_context_t disp, char *rom_name, int stype)
     printText("Finding latest save slot...", 3, -1, disp);
     display_show(disp);
     while (true) {
-        sprintf(fname, "/"ED64_FIRMWARE_PATH"/%s/%s.%04x.%s", save_path, rom_name, save_count, save_type_extension);
+        sprintf(fname, "/"CART_EMU_FW_PATH"/%s/%s.%04x.%s", save_path, rom_name, save_count, save_type_extension);
         result = f_stat (fname, &fnoba);
         if (result != FR_OK) {
             // we found our first missing save slot, break
@@ -1659,12 +1713,12 @@ int saveTypeFromSd(display_context_t disp, char *rom_name, int stype)
         // we've went 1 past the end, so back up
         sprintf(fname, "Found latest save slot: %04x", --save_count);
         printText(fname, 3, -1, disp);
-        sprintf(fname, "/"ED64_FIRMWARE_PATH"/%s/%s.%04x.%s", save_path, rom_name, save_count, save_type_extension);
+        sprintf(fname, "/"CART_EMU_FW_PATH"/%s/%s.%04x.%s", save_path, rom_name, save_count, save_type_extension);
     } else {
         // not even a 0000 was found, so look at the original name before numbering was implemented
         printText("No save slot found!", 3, -1, disp);
         printText("Looking for non-numbered file...", 3, -1, disp);
-        sprintf(fname, "/"ED64_FIRMWARE_PATH"/%s/%s.%s", save_path, rom_name, save_type_extension);
+        sprintf(fname, "/"CART_EMU_FW_PATH"/%s/%s.%s", save_path, rom_name, save_type_extension);
     }
     display_show(disp);
 
@@ -1749,7 +1803,7 @@ int saveTypeToSd(display_context_t disp, char *rom_name, int stype)
     printText("Finding unused save slot...", 3, -1, disp);
     display_show(disp);
     while (true) {
-        sprintf(fname, "/"ED64_FIRMWARE_PATH"/%s/%s.%04x.%s", save_path, rom_name, save_count, save_type_extension);
+        sprintf(fname, "/"CART_EMU_FW_PATH"/%s/%s.%04x.%s", save_path, rom_name, save_count, save_type_extension);
         result = f_stat (fname, &fnoba);
         if (result != FR_OK) {
             // we found our first missing save slot, break
@@ -1760,7 +1814,7 @@ int saveTypeToSd(display_context_t disp, char *rom_name, int stype)
     sprintf(fname, "Found unused save slot: %04x", save_count);
     printText(fname, 3, -1, disp);
     display_show(disp);
-    sprintf(fname, "/"ED64_FIRMWARE_PATH"/%s/%s.%04x.%s", save_path, rom_name, save_count, save_type_extension);
+    sprintf(fname, "/"CART_EMU_FW_PATH"/%s/%s.%04x.%s", save_path, rom_name, save_count, save_type_extension);
 
     int size = saveTypeToSize(stype); // int byte
     TRACEF(disp, "size for save=%i", size);
@@ -1808,10 +1862,10 @@ int saveTypeToSd(display_context_t disp, char *rom_name, int stype)
 }
 
 //check out the userfriendly ini file for config-information
-int readConfigFile(void)
+int readConfigFilex(void)
 {
     TCHAR filename[32];
-    sprintf(filename, "/"ED64_FIRMWARE_PATH"/ALT64.INI");
+    sprintf(filename, "/"CART_EMU_FW_PATH"/ALT64.INI");
 
     FRESULT result;
     FIL file;
@@ -1869,6 +1923,75 @@ int readConfigFile(void)
             return 1;
         }
     }
+
+    return 0;
+}
+
+int readConfigFile(void)
+{
+    TCHAR filename[32];
+    sprintf(filename, "rom://ALT64.INI");
+
+    FRESULT result;
+    UINT bytesread;
+    FILE *file = fopen(filename, "r");
+    //result = fopen(&file, filename, FA_READ);
+
+    if (file != NULL)
+    {
+        int fsize = filesize(file);
+
+        char config_rawdata[fsize];
+
+        result =
+        fread (
+            config_rawdata,
+            sizeof(config_rawdata),
+            1,
+            file);
+
+        fclose(file);
+
+        configuration config;
+        //if (result != fsize) {
+        //    return 0;
+        //}
+
+        if (ini_parse_str(config_rawdata, configHandler, &config) < 0)
+        {
+            return 0;
+        }
+        else
+        {
+            border_color_1_s = config.border_color_1;
+            border_color_2_s = config.border_color_2;
+            box_color_s = config.box_color;
+            selection_color_s = config.selection_color;
+            selection_font_color_s = config.selection_font_color;
+            list_font_color_s = config.list_font_color;
+            list_dir_font_color_s = config.list_dir_font_color;
+
+            mempak_path = config.mempak_path;
+            save_path = config.save_path;
+            sound_on = config.sound_on;
+            bgm_on = config.bgm_on;
+            page_display = config.page_display;
+            tv_mode = config.tv_mode;
+            quick_boot = config.quick_boot;
+            enable_colored_list = config.enable_colored_list;
+            ext_type = config.ext_type;
+            cd_behaviour = config.cd_behaviour;
+            scroll_behaviour = config.scroll_behaviour;
+            text_offset = config.text_offset;
+            hide_sysfolder = config.hide_sysfolder;
+            sd_speed = config.sd_speed;
+            background_image = config.background_image;
+
+            return 1;
+        }
+    }
+
+    return 0;
 }
 
 int str2int(char data)
@@ -1891,7 +2014,7 @@ uint32_t translate_color(char *hexstring)
 }
 
 //init fat filesystem after everdrive init and before sdcard access
-void initFilesystem(void)
+void initFilesystem()
 {
     evd_ulockRegs();
     sleep(10);
@@ -1908,62 +2031,95 @@ void initFilesystem(void)
     }
 }
 
+extern uint32_t LastError;
+#define DAISY_BASE_REGISTER 0xA8040000 
+static volatile u32 *daisy_regs = (u32 *) DAISY_BASE_REGISTER;
+u8 sdRead(u32 sector, u8 *buff, u16 count);
+
 //prints the sdcard-filesystem content
 void readSDcard(display_context_t disp, char *directory)
-{ //TODO: readd coloured list? use a hash table...
+{
+    FRESULT res;
+    DIR dir;
+    static FILINFO fno;
+    //TODO: readd coloured list? use a hash table...
     // FatRecord *frec;
     // u8 cresp = 0;
 
     // //load the directory-entry
-    // cresp = fatLoadDirByName("/"ED64_FIRMWARE_PATH"/CFG");
-
-    // int dsize = dir->size;
-    // char colorlist[dsize][256];
-
-    // if (enable_colored_list)
-    // {
-
-    //     for (int i = 0; i < dir->size; i++)
-    //     {
-    //         frec = dir->rec[i];
-    //         u8 rom_cfg_file[128];
-
-    //         //set rom_cfg
-    //         sprintf(rom_cfg_file, "/"ED64_FIRMWARE_PATH"/CFG/%s", frec->name);
-
-    //         static uint8_t cfg_file_data[512] = {0};
-
-    //         FRESULT result;
-    //         FIL file;
-    //         UINT bytesread;
-    //         result = f_open(&file, rom_cfg_file, FA_READ);
-
-    //         if (result == FR_OK)
-    //         {
-    //             int fsize = f_size(&file);
-
-    //             result =
-    //             f_read (
-    //                 &file,        /* [IN] File object */
-    //                 &cfg_file_data,  /* [OUT] Buffer to store read data */
-    //                 fsize,         /* [IN] Number of bytes to read */
-    //                 &bytesread    /* [OUT] Number of bytes read */
-    //             );
-
-    //             f_close(&file);
-
-    //             colorlist[i][0] = (char)cfg_file_data[5];     //row i column 0 = colour
-    //             strcpy(colorlist[i] + 1, cfg_file_data + 32); //row i column 1+ = fullpath
-
-    //         }
-    //     }
-    // }
-
+    // cresp = fatLoadDirByName("/"CART_EMU_FW_PATH"/CFG");
     // u8 buff[32];
 
     // //some trash buffer
     // FatRecord *rec;
     // u8 resp = 0;
+
+    int dsize = 0;
+    char colorlist[dsize][32];
+
+    if (enable_colored_list)
+    {
+        //TODO: is there a better way we can count the entries perhaps a hashtable?
+        res = f_opendir(&dir, directory);                       /* Open the directory */
+        if (res == FR_OK) {
+            for (;;) {
+                res = f_readdir(&dir, &fno);                   /* Read a directory item */
+                if (res != FR_OK || fno.fname[0] == 0) break;  /* Break on error or end of dir */
+                if (!fno.fattrib & !AM_DIR) {
+                    dsize++;
+                }
+            }
+            f_closedir(&dir);
+        }
+        for (int i = 0; i < dsize; i++)
+        {
+            //frec = dir->rec[i];
+            u8 rom_cfg_file[128];
+
+            //set rom_cfg
+            sprintf(rom_cfg_file, "/"CART_EMU_FW_PATH"/CFG/%s", directory);
+
+            static uint8_t cfg_file_data[512] = {0};
+
+            FRESULT result;
+            FIL file;
+            UINT bytesread;
+            result = f_open(&file, rom_cfg_file, FA_READ);
+
+            if (result == FR_OK)
+            {
+                int fsize = f_size(&file);
+
+                result =
+                f_read (
+                    &file,        /* [IN] File object */
+                    &cfg_file_data,  /* [OUT] Buffer to store read data */
+                    fsize,         /* [IN] Number of bytes to read */
+                    &bytesread    /* [OUT] Number of bytes read */
+                );
+
+                f_close(&file);
+
+                colorlist[i][0] = (char)cfg_file_data[5];     //row i column 0 = colour
+                strcpy(colorlist[i] + 1, cfg_file_data + 32); //row i column 1+ = fullpath
+            }
+        }
+    }
+
+
+    FRESULT result = FR_OK;
+    if (fat_initialized != 1) {
+        fs = malloc(sizeof (FATFS));           /* Get work area for the volume */
+        memset(fs, 0, sizeof(fs));
+        result = f_mount(fs,"",1);
+        if (result != FR_OK) {
+            printText("mount error", 11, -1, disp);
+            sleep(3000);
+
+        } else {
+            fat_initialized = 1;
+        }
+    }
 
     count = 1;
     //dir_t buf;
@@ -1972,17 +2128,23 @@ void readSDcard(display_context_t disp, char *directory)
     clearScreen(disp);
 
 
-    FRESULT res;
-    DIR dir;
     UINT i;
-    static FILINFO fno;
-
+    char error_msg[256];
+    
+    u8 buff[512];
+    sdRead(0, buff, 1);
+    sprintf(error_msg, "CHDIR: %i %i %i %08X %04X %s", res, fat_initialized, result, *((u32*)buff), *((u16*)(buff + 510)), directory);
+    printText(error_msg, 3, -1, disp);
 
     res = f_opendir(&dir, directory);                       /* Open the directory */
     if (res == FR_OK) {
         for (;;) {
             res = f_readdir(&dir, &fno);                   /* Read a directory item */
             if (res != FR_OK || fno.fname[0] == 0) break;  /* Break on error or end of dir */
+            if ((strstr(fno.fname, ".eep") != NULL) || (strstr(fno.fname, ".fla") != NULL) || (strstr(fno.fname, ".zip") != NULL)) {
+                continue;
+            }
+
             if (!strcmp(fno.fname, "System Volume Information") == 0 || (!strcmp(fno.fname, "ED64") == 0 && hide_sysfolder == 0))
             {
                 if (fno.fattrib & AM_DIR) {                    /* It is a directory */
@@ -1994,29 +2156,29 @@ void readSDcard(display_context_t disp, char *directory)
                 strcpy(list[count - 1].filename, fno.fname);
                 list[count - 1].color = 0;
 
-                // if (enable_colored_list)
-                // {
-                //     for (int c = 0; c < dsize; c++)
-                //     {
-
-                //         u8 short_name[256];
-
-                //         sprintf(short_name, "%s", colorlist[c] + 1);
-
-                //         u8 *pch_s; // point-offset
-                //         pch_s = strrchr(short_name, '/');
-
-                //         if (strcmp(list[count - 1].filename, pch_s + 1) == 0)
-                //         {
-
-                //             list[count - 1].color = colorlist[c][0];
-                //         }
-                //     }
-                //     //new color test end
-                // }
+                if (enable_colored_list)
+                {
+                    for (int c = 0; c < dsize; c++)
+                    {
+                        u8 short_name[256];
+                        sprintf(short_name, "%s", colorlist[c] + 1);
+                        u8 *pch_s;
+                        pch_s = strrchr(short_name, '/');
+                        if ((pch_s != NULL) && (strcmp(list[count - 1].filename, pch_s + 1) == 0))
+                        {
+                            list[count - 1].color = colorlist[c][0];
+                        }
+                    }
+                }
 
                 count++;
                 list = realloc(list, sizeof(direntry_t) * count);
+
+                // TODO: Fix the filename allocation limit. (Needed for CEN64)
+                // Maybe FindNext works better, by filling the screen to a specific limit and quitting.
+                //if (count > 100) {
+                //    break;
+                //}
             }
         }
         f_closedir(&dir);
@@ -2025,7 +2187,7 @@ void readSDcard(display_context_t disp, char *directory)
     else
     {
         char error_msg[32];
-        sprintf(error_msg, "CHDIR ERROR: %i", res);
+        sprintf(error_msg, "CHDIR ERROR: %i %i %i %08X %i", res, fat_initialized, result, daisy_regs[REG_DMA_DATA], LastError);
         printText(error_msg, 3, -1, disp);
         sleep(3000);
     }
@@ -2043,6 +2205,25 @@ void readSDcard(display_context_t disp, char *directory)
     //print directory
     display_dir(list, cursor, page, MAX_LIST, count, disp);
 }
+
+/*
+u32 listUpper;
+u32 listLower;
+direntry_t* accessFileList(u32 cursor)
+{
+
+}
+
+void insertFileEntry()
+{
+
+}
+
+buildFileList()
+{
+
+}
+*/
 
 /*
  * Returns two cheat lists:
@@ -2250,8 +2431,13 @@ int readCheatFile(TCHAR *filename, u32 *cheat_lists[2])
     }
 }
 
-void bootRom(display_context_t disp, int silent)
+void bootRom(display_context_t disp, int silent, char* filePath, char* parentFilePath, uint32_t offset1, uint32_t offset2)
 {
+    if (boot_cic == 0)
+    {
+        boot_cic = CIC_6102;
+    }
+
     if (boot_cic != 0)
     {
         if (boot_save != 0)
@@ -2259,7 +2445,7 @@ void bootRom(display_context_t disp, int silent)
             TCHAR cfg_file[32];
 
             //set cfg file with last loaded cart info and save-type
-            sprintf(cfg_file, "/"ED64_FIRMWARE_PATH"/%s/LASTROM.CFG", save_path);
+            sprintf(cfg_file, "/"CART_EMU_FW_PATH"/%s/LASTROM.CFG", save_path);
 
             FRESULT result;
             FIL file;
@@ -2281,13 +2467,12 @@ void bootRom(display_context_t disp, int silent)
                 f_puts(rom_filename, &file);
 
                 f_close(&file);
-
-                //set the fpga cart-save type
-                evd_setSaveType(boot_save);
-
                 saveTypeFromSd(disp, rom_filename, boot_save);
             }
         }
+
+        //set the fpga cart-save type -- This should be set unconditionally, otherwise it may be kept on while the rom requests off.
+        evd_setSaveType(boot_save);
 
         TRACE(disp, "Cartridge-Savetype set");
         TRACE(disp, "information stored for reboot-save...");
@@ -2304,7 +2489,7 @@ void bootRom(display_context_t disp, int silent)
             printText("try to load cheat-file...", 3, -1, disp);
 
             char cheat_filename[64];
-            sprintf(cheat_filename, "/"ED64_FIRMWARE_PATH"/CHEATS/%s.yml", rom_filename);
+            sprintf(cheat_filename, "/"CART_EMU_FW_PATH"/CHEATS/%s.yml", rom_filename);
 
             int ok = readCheatFile(cheat_filename, cheat_lists);
             if (ok == 0)
@@ -2324,26 +2509,64 @@ void bootRom(display_context_t disp, int silent)
         }
 
         disable_interrupts();
-        int bios_cic = getCicType(1);
+        int bios_cic = 0;
 
-        if (checksum_fix_on)
+        // TODO: Daisydrive doesn't need this here.
+#if 0
         {
-            checksum_sdram();
+            bios_cic = getCicType(1);
+            if (checksum_fix_on)
+            {
+                checksum_sdram();
+            }
         }
+#endif
 
         evd_lockRegs();
         sleep(10);
 
-        while (!(disp = display_lock()))
-            ;
-        //blank screen to avoid glitches
-
-        graphics_fill_screen(disp, 0x000000FF);
+        graphics_fill_screen(disp, 0x00FF00FF);
         display_show(disp);
 
         f_mount(0, "", 0);                     /* Unmount the default drive */
         free(fs);                              /* Here the work area can be discarded */
+
+        uint32_t pathCount = 1;
+        uint32_t offsets[2];
+        char *romPath[2];
+        if (parentFilePath != NULL)
+        {
+            pathCount = 2;
+            romPath[0] = parentFilePath;
+            offsets[0] = offset1;
+            romPath[1] = filePath;
+            offsets[1] = offset2;
+        } 
+        else 
+        {
+            romPath[0] = filePath;
+            offsets[0] = 0;
+        }
+
+        if (filePath != NULL)
+        {
+            daisyDrive_uploadRom(romPath, offsets, pathCount);
+            bios_cic = getCicType(1);
+            if (checksum_fix_on)
+            {
+                checksum_sdram();
+            }
+        }
+
         simulate_boot(boot_cic, bios_cic, cheat_lists); // boot_cic
+
+    } else {
+        // TODO: Find out why the CIC is set incorrectly on real HW.???
+        uint32_t offsets[1];
+        char *romPath[1];
+        offsets[0] = 0;
+        romPath[0] = "WTF?\0";
+        daisyDrive_uploadRom(romPath, NULL, 1);
     }
 }
 
@@ -2450,10 +2673,8 @@ void drawShortInfoBox(display_context_t disp, char *text, u8 mode)
 
 void readRomConfig(display_context_t disp, char *short_filename, char *full_filename)
 {
-    TCHAR cfg_filename[256];
-    sprintf(rom_filename, "%s", short_filename);
-    rom_filename[strlen(rom_filename) - 4] = '\0'; // cut extension
-    sprintf(cfg_filename, "/"ED64_FIRMWARE_PATH"/CFG/%s.CFG", rom_filename);
+    TCHAR cfg_filename[265];
+    sprintf(cfg_filename, "/"CART_EMU_FW_PATH"/CFG/%s.CFG", short_filename);
 
     uint8_t rom_cfg_data[512];
 
@@ -2654,7 +2875,7 @@ void drawToplistBox(display_context_t disp, int line)
 
     if (line == 0)
     {
-        char* path = "/"ED64_FIRMWARE_PATH"/CFG";
+        char* path = "/"CART_EMU_FW_PATH"/CFG";
 
         FRESULT res;
         DIR dir;
@@ -2676,7 +2897,7 @@ void drawToplistBox(display_context_t disp, int line)
 
         res = f_opendir(&dir, path);                       /* Open the directory */
         if (res == FR_OK) {
-            char toplist[dsize][256];
+            char toplist[256][256];
 
             for (;;) {
                 res = f_readdir(&dir, &fno);                   /* Read a directory item */
@@ -3173,8 +3394,10 @@ void loadFile(display_context_t disp)
         ft = 6;
     else if (!strcmp(extension, "MP3"))
         ft = 7;
+    else if (!strcmp(extension, "SMC") || !strcmp(extension, "SFC"))
+        ft = 8;
 
-    if (ft != 7 || ft != 2)
+    if (ft != 7 && ft != 2)
     {
         while (!(disp = display_lock()))
             ;
@@ -3187,22 +3410,23 @@ void loadFile(display_context_t disp)
         display_show(disp);
         select_mode = 9;
     }
+    while (!(disp = display_lock()))
+            ;
     switch (ft)
     {
+        
     case 1:
         if (quick_boot) //write to the file
         {
             FRESULT result;
             FIL file;
-            result = f_open(&file, "/"ED64_FIRMWARE_PATH"/LASTROM.CFG", FA_WRITE | FA_CREATE_ALWAYS);
+            result = f_open(&file, "/"CART_EMU_FW_PATH"/LASTROM.CFG", FA_WRITE | FA_CREATE_ALWAYS);
             if (result == FR_OK)
             {
                 f_puts (
                     name_file, /* [IN] String */
                     &file           /* [IN] File object */
                   );
-
-
 
                   f_close(&file);
 
@@ -3231,8 +3455,6 @@ void loadFile(display_context_t disp)
         }
         break;
     case 2:
-        while (!(disp = display_lock()))
-            ;
         clearScreen(disp); //part clear?
         display_dir(list, cursor, page, MAX_LIST, count, disp);
         display_show(disp);
@@ -3258,8 +3480,8 @@ void loadFile(display_context_t disp)
         break;
     case 7:
     {
-        while (!(disp = display_lock()))
-        ;
+        //while (!(disp = display_lock()))
+        //;
         clearScreen(disp);
         drawShortInfoBox(disp, "      Loading...", 0);
         display_show(disp);
@@ -3283,6 +3505,10 @@ void loadFile(display_context_t disp)
 
         break;
     }
+    case 8:
+        loadsnesrom(disp, name_file);
+        display_show(disp);
+        break;
     default:
         break;
     }
@@ -3474,9 +3700,7 @@ void handleInput(display_context_t disp, sprite_t *contr)
             set = 4;
             break;
         case rom_config_box:
-            while (!(disp = display_lock()))
-                ;
-
+            while (!(disp = display_lock())) {}
             new_scroll_pos(&cursor, &page, MAX_LIST, count);
             clearScreen(disp); //part clear?
             display_dir(list, cursor, page, MAX_LIST, count, disp);
@@ -3561,22 +3785,23 @@ void handleInput(display_context_t disp, sprite_t *contr)
                 FRESULT result;
                 FIL file;
                 UINT bytesread;
-                result = f_open(&file, "/"ED64_FIRMWARE_PATH"/LASTROM.CFG", FA_READ);
+                result = f_open(&file, "/"CART_EMU_FW_PATH"/LASTROM.CFG", FA_READ);
 
                 if (result == FR_OK)
                 {
                     int fsize = f_size(&file) + 1; //extra char needed for null terminator '/0'
-                    uint8_t lastrom_cfg_data[fsize];
+                    uint8_t lastrom_cfg_data[265];
 
-                    // result =
-                    // f_read (
-                    //     &file,        /* [IN] File object */
-                    //     lastrom_cfg_data,  /* [OUT] Buffer to store read data */
-                    //     fsize,         /* [IN] Number of bytes to read */
-                    //     &bytesread    /* [OUT] Number of bytes read */
-                    // );
+                    result =
+                    f_read (
+                         &file,        /* [IN] File object */
+                         lastrom_cfg_data,  /* [OUT] Buffer to store read data */
+                         fsize,         /* [IN] Number of bytes to read */
+                         &bytesread    /* [OUT] Number of bytes read */
+                    );
 
-                    f_gets(lastrom_cfg_data, fsize, &file);
+                    lastrom_cfg_data[bytesread + 1] = 0;
+                    //f_gets(lastrom_cfg_data, fsize, &file);
 
                     f_close(&file);
 
@@ -3588,11 +3813,9 @@ void handleInput(display_context_t disp, sprite_t *contr)
 
                     evd_ulockRegs();
                     sleep(10);
-
                     select_mode = 9;
                                         //short          fullpath
                     readRomConfig(disp, file_name + 1, lastrom_cfg_data);
-
                     loadrom(disp, lastrom_cfg_data, 1);
                     display_show(disp);
                 }
@@ -3651,7 +3874,7 @@ void handleInput(display_context_t disp, sprite_t *contr)
 
             //normal boot
             //boot the loaded rom
-            bootRom(disp, 0);
+            bootRom(disp, 0, NULL, NULL, 0, 0);
             //never return
             break;
 
@@ -3945,7 +4168,7 @@ void handleInput(display_context_t disp, sprite_t *contr)
                      */
 
                 //TODO: this code is very similar to that used in loadFile, we should move it to a seperate function!
-                char _upper_name_file[64];
+                char _upper_name_file[265];
 
                 strcpy(_upper_name_file, name_file);
 
@@ -4057,14 +4280,14 @@ void handleInput(display_context_t disp, sprite_t *contr)
             {
                 //TODO: this code is similar (if not the same) as loadFile and can be optimised!
                 //open
-                char name_file[64];
+                char name_file[265];
 
                 if (strcmp(pwd, "/") == 0)
                     sprintf(name_file, "/%s", list[cursor].filename);
                 else
                     sprintf(name_file, "%s/%s", pwd, list[cursor].filename);
 
-                char _upper_name_file[64];
+                char _upper_name_file[265];
 
                 strcpy(_upper_name_file, name_file);
                 strhicase(_upper_name_file, strlen(_upper_name_file));
@@ -4085,7 +4308,6 @@ void handleInput(display_context_t disp, sprite_t *contr)
                     display_dir(list, cursor, page, MAX_LIST, count, disp);
 
                     drawBoxNumber(disp, 3); //rominfo
-                    display_show(disp);
 
                     u16 msg = 0;
                     evd_ulockRegs();
@@ -4190,11 +4412,10 @@ void handleInput(display_context_t disp, sprite_t *contr)
         // open
         case file_manager:
         {
-            while (!(disp = display_lock()))
-                ;
-
             if (list[cursor].type == DT_DIR && empty == 0)
             {
+                while (!(disp = display_lock()))
+                ;
                 char name_dir[256];
 
                 /* init pwd=/
@@ -4204,7 +4425,7 @@ void handleInput(display_context_t disp, sprite_t *contr)
                          * /ED64
                          *
                          * cursor=SAVE
-                         * /"ED64_FIRMWARE_PATH"/SAVE
+                         * /"CART_EMU_FW_PATH"/SAVE
                          */
 
                 if (strcmp(pwd, "/") == 0)
@@ -4275,12 +4496,19 @@ void handleInput(display_context_t disp, sprite_t *contr)
             u8 resp = 0;
 
             //set rom_cfg
-            sprintf(rom_cfg_file, "/"ED64_FIRMWARE_PATH"/CFG/%s.CFG", rom_filename);
+            sprintf(rom_cfg_file, "/"CART_EMU_FW_PATH"/CFG/%s.CFG", rom_filename);
 
 
             FRESULT result;
             FIL file;
             result = f_open(&file, rom_cfg_file, FA_WRITE | FA_OPEN_ALWAYS);
+
+            if (result != FR_OK)
+            {
+                // Attempt to create the CFG directory when the write fails.
+                f_mkdir("/"CART_EMU_FW_PATH"/CFG/");
+                result = f_open(&file, rom_cfg_file, FA_WRITE | FA_OPEN_ALWAYS);
+            }
 
             if (result == FR_OK)
             {
@@ -4358,7 +4586,7 @@ void handleInput(display_context_t disp, sprite_t *contr)
                 if (strcmp(pwd, "/") == 0)
                     sprintf(name_file, "/%s", list[cursor].filename);
                 else
-                    sprintf(name_file, "%s/%s", pwd, list[cursor].filename);    
+                    sprintf(name_file, "%s/%s", pwd, list[cursor].filename);
                 
                 f_unlink(name_file);
 
@@ -4387,9 +4615,6 @@ void handleInput(display_context_t disp, sprite_t *contr)
 
             if (!(strcmp(pwd, "/") == 0))
             {
-                while (!(disp = display_lock()))
-                    ;
-
                 //replace by strstr()? :>
                 int slash_pos = 0;
                 int i = 0;
@@ -4400,19 +4625,8 @@ void handleInput(display_context_t disp, sprite_t *contr)
 
                     i++;
                 }
-                char new_pwd[64];
 
-                int j;
-                for (j = 0; j < slash_pos; j++)
-                    new_pwd[j] = pwd[j];
-
-                if (j == 0)
-                    j++;
-
-                new_pwd[j] = '\0';
-
-                sprintf(pwd, "%s", new_pwd);
-
+                pwd[slash_pos] = 0;
                 cursor_lastline = 0;
                 cursor_line = 0;
 
@@ -4466,7 +4680,7 @@ void handleInput(display_context_t disp, sprite_t *contr)
 
             display_dir(list, cursor, page, MAX_LIST, count, disp);
             input_mapping = file_manager;
-            display_show(disp);
+            //display_show(disp);
             break;
 
         case char_input:
@@ -4562,11 +4776,11 @@ int main(void)
         configure();
 
         //fast boot for backup-save data
-        int sj = evd_readReg(REG_CFG); // not sure if this is needed!
-        int save_job = evd_readReg(REG_SAV_CFG); //TODO: or the firmware is V3
+        //int sj = evd_readReg(REG_CFG); // not sure if this is needed!
+        //int save_job = evd_readReg(REG_SAV_CFG); //TODO: or the firmware is V3
 
-        if (save_job != 0)
-            fast_boot = 1;
+        //if (save_job != 0)
+        //    fast_boot = 1;
 
         //not gamepads more or less the n64 hardware-controllers
         controller_init();
@@ -4574,7 +4788,10 @@ int main(void)
         //filesystem on
         initFilesystem();
 
-        readConfigFile();
+        if (readConfigFilex() == 0) {
+            readConfigFile();
+        }
+
         //n64 initialization
 
         //sd card speed settings from config
@@ -4614,7 +4831,7 @@ int main(void)
                 break;
         }
 
-        init_interrupts();
+        //init_interrupts();
 
         if (sound_on)
         {
@@ -4626,8 +4843,7 @@ int main(void)
         //timer_init(); no use of timers yet...
 
         //background
-        display_init(res, DEPTH_32_BPP, 3, GAMMA_NONE, ANTIALIAS_RESAMPLE);
-
+        display_init(resolution, DEPTH_32_BPP, 3, GAMMA_NONE, ANTIALIAS_RESAMPLE);
         //bg buffer
         static display_context_t disp;
 
@@ -4636,6 +4852,9 @@ int main(void)
             ;
 
         //backgrounds from ramfs/libdragonfs
+        if (fat_initialized != 1) {
+            printText("mount error", 11, -1, disp);
+        }
 
         if (!fast_boot)
         {
@@ -4655,12 +4874,12 @@ int main(void)
         }
 
         char background_path[64];
-        sprintf(background_path, "/"ED64_FIRMWARE_PATH"/wallpaper/%s", background_image);
+        sprintf(background_path, "/"CART_EMU_FW_PATH"/wallpaper/%s", background_image);
 
         FRESULT fr;
         FILINFO fno;
 
-        fr = f_stat(background_path, &fno);
+        fr = FR_DISK_ERR;//f_stat(background_path, &fno);
 
         if (fr == FR_OK)
         {
@@ -4673,35 +4892,34 @@ int main(void)
 
         //todo: if bgm is enabled, we should start it...
         if (sound_on && bgm_on){
-        sndPlayBGM("rom://sounds/bgm21.it");
+            sndPlayBGM("rom://sounds/bgm21.it");
         }
-        border_color_1 = translate_color(border_color_1_s);
-        border_color_2 = translate_color(border_color_2_s);
-        box_color = translate_color(box_color_s);
-        selection_color = translate_color(selection_color_s);
-        selection_font_color = translate_color(selection_font_color_s);
-        list_font_color = translate_color(list_font_color_s);
-        list_dir_font_color = translate_color(list_dir_font_color_s);
+
+        // border_color_1 = translate_color(border_color_1_s);
+        // border_color_2 = translate_color(border_color_2_s);
+        // box_color = translate_color(box_color_s);
+        // selection_color = translate_color(selection_color_s);
+        // selection_font_color = translate_color(selection_font_color_s);
+        // list_font_color = translate_color(list_font_color_s);
+        // list_dir_font_color = translate_color(list_dir_font_color_s);
 
         while (!(disp = display_lock()))
             ;
 
         drawBg(disp);           //new
         drawBoxNumber(disp, 1); //new
-
-        uint32_t *buffer = (uint32_t *)__get_buffer(disp); //fg disp = 2
+        //volatile uint32_t *buffer = (uint32_t *)__get_buffer(disp); //fg disp = 2
 
         display_show(disp); //new
-
-        backupSaveData(disp);
-
+        //backupSaveData(disp);
+        //while(1) {}
         while (!(disp = display_lock()))
             ;
-
         sprintf(pwd, "%s", "/");
         readSDcard(disp, "/");
 
         display_show(disp);
+
         //chr input coord
         x = 30;
         y = 30;
@@ -4715,7 +4933,6 @@ int main(void)
         sprite_t *contr = malloc(dfs_size(fp));
         dfs_read(contr, 1, dfs_size(fp), fp);
         dfs_close(fp);
-
         //system main-loop with controller inputs-scan
         for ( ;; )
         {
@@ -4734,8 +4951,20 @@ int main(void)
                 }
             }
 
-            if (input_mapping == file_manager)
+            if (input_mapping == file_manager) {
                 sleep(60);
+                // Every second increase the filename scroll offset.
+                idlecount += 1;
+                if (idlecount > 8) {
+                    idlecount = 0;
+                    filescroll += 1;
+                    while (!(disp = display_lock()))
+                    ;
+                    clearScreen(disp); //part clear?
+                    display_dir(list, cursor, page, MAX_LIST, count, disp);
+                    display_show(disp);
+                }
+            }
 
             if (input_mapping == char_input)
             {

@@ -5,6 +5,7 @@
 #define SOUND_ENABLED
 #if !defined(SOUND_ENABLED)
 
+
 void sndInit(void)
 {
 }
@@ -30,6 +31,9 @@ void sndUpdate(void)
 #include <mikmod.h>
 #include <libdragon.h> //needed for audio_get_frequency()
 #include "hashtable.h"
+
+MIKMODAPI extern UWORD md_mode __attribute__((section (".data")));
+MIKMODAPI extern UWORD md_mixfreq __attribute__((section (".data")));
 
 MODULE *moduleBGM = NULL;
 

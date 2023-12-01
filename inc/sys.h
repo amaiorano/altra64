@@ -10,8 +10,9 @@
 #include "types.h"
 
 
+void dma_wait(void);
 void dma_read_s(void * ram_address, unsigned long pi_address, unsigned long len);
-void dma_write_s(void * ram_address, unsigned long pi_address, unsigned long len);
+void dma_write_s(const void * ram_address, unsigned long pi_address, unsigned long len);
 
 
 void sleep(u32 ms);
@@ -28,7 +29,7 @@ typedef struct SP_regs_s {
     u32 status;
 } _SP_regs_s;
 
-#define SP_PC *((volatile u32 *)0xA4080000)
+//#define SP_PC *((volatile u32 *)0xA4080000)
 #define SP_IBIST_REG *((volatile u32 *)0xA4080004)
 
 static volatile struct AI_regs_s * const AI_regs = (struct AI_regs_s *) 0xa4500000;

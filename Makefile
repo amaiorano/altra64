@@ -19,9 +19,9 @@ OBJDIR = ./obj
 BINDIR = ./bin
 TOOLSDIR = ./tools
 
-LINK_FLAGS = -O3 -L$(ROOTDIR)/lib -L$(ROOTDIR)/mips64-elf/lib -ldragon -lmad -lmikmod -lyaml -lc -lm -ldragonsys -lnosys $(LIBS) -Tn64ld.x
+LINK_FLAGS = -L$(ROOTDIR)/lib -L$(ROOTDIR)/mips64-elf/lib -ldragon -lmad -lmikmod -lyaml -lc -lm -ldragonsys -lnosys $(LIBS) -Tn64.ld --gc-sections
 PROG_NAME = OS64P
-CFLAGS = -std=gnu99 -march=vr4300 -mtune=vr4300 -O3 -I$(INCDIR) -I$(ROOTDIR)/include -I$(ROOTDIR)/mips64-elf/include -lpthread -lrt -D_REENTRANT -DUSE_TRUETYPE $(SET_DEBUG)
+CFLAGS = -std=gnu99 -march=vr4300 -mtune=vr4300 -ggdb -O3 -I$(INCDIR) -I~/libyaml/include -I$(ROOTDIR)/include -I$(ROOTDIR)/mips64-elf/include -lpthread -lrt -D_REENTRANT -DUSE_TRUETYPE $(SET_DEBUG)
 ASFLAGS = -mtune=vr4300 -march=vr4300
 CC = $(GCCN64PREFIX)gcc
 AS = $(GCCN64PREFIX)as
@@ -31,11 +31,11 @@ OBJCOPY = $(GCCN64PREFIX)objcopy
 SOURCES := $(wildcard $(SRCDIR)/*.c)
 OBJECTS = $(SOURCES:$(SRCDIR)/%.c=$(OBJDIR)/%.o)
 
-$(PROG_NAME).v64: $ $(PROG_NAME).elf $(PROG_NAME).dfs
+$(PROG_NAME).z64: $ $(PROG_NAME).elf $(PROG_NAME).dfs
 	$(OBJCOPY) $(BINDIR)/$(PROG_NAME).elf $(BINDIR)/$(PROG_NAME).bin -O binary
-	rm -f $(BINDIR)/$(PROG_NAME).v64
-	$(N64TOOL) -l 4M -t $(HEADERTITLE) -h $(RESDIR)/$(HEADERNAME) -o $(BINDIR)/$(PROG_NAME).v64 $(BINDIR)/$(PROG_NAME).bin -s 1M $(BINDIR)/$(PROG_NAME).dfs
-	$(CHKSUM64PATH) $(BINDIR)/$(PROG_NAME).v64
+	rm -f $(BINDIR)/$(PROG_NAME).z64
+	$(N64TOOL) -l 4M -t $(HEADERTITLE) -h $(RESDIR)/$(HEADERNAME) -o $(BINDIR)/$(PROG_NAME).z64 $(BINDIR)/$(PROG_NAME).bin -s 1M $(BINDIR)/$(PROG_NAME).dfs
+	$(CHKSUM64PATH) $(BINDIR)/$(PROG_NAME).z64
 
 $(PROG_NAME).elf : $(OBJECTS)
 	@mkdir -p $(BINDIR)
@@ -45,17 +45,17 @@ $(OBJECTS): $(OBJDIR)/%.o : $(SRCDIR)/%.c
 	@mkdir -p $(OBJDIR)
 	$(CC) $(CFLAGS) -c $< -o $@
 
-copy: $(PROG_NAME).v64
+copy: $(PROG_NAME).z64
 	sh $(TOOLSDIR)/upload.sh
 
 $(PROG_NAME).dfs:
 	$(MKDFSPATH) $(BINDIR)/$(PROG_NAME).dfs $(RESDIR)/filesystem/
 
-all: $(PROG_NAME).v64
+all: $(PROG_NAME).z64
 
-debug: $(PROG_NAME).v64
+debug: $(PROG_NAME).z64
 
 debug: SET_DEBUG=-DDEBUG
 
 clean:
-	rm -f $(BINDIR)/*.v64 $(BINDIR)/*.elf $(OBJDIR)/*.o $(BINDIR)/*.bin $(BINDIR)/*.dfs
+	rm -f $(BINDIR)/*.z64 $(BINDIR)/*.elf $(OBJDIR)/*.o $(BINDIR)/*.bin $(BINDIR)/*.dfs

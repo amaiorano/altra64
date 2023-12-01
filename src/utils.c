@@ -195,24 +195,24 @@ int pushSaveToCart(int stype, uint8_t *buffer){
 
 
 int getSRAM( uint8_t *buffer, int size){
-    while (dma_busy()) ;
+    dma_wait() ;
 
-    IO_WRITE(PI_BSD_DOM2_LAT_REG, 0x05);
-    IO_WRITE(PI_BSD_DOM2_PWD_REG, 0x0C);
-    IO_WRITE(PI_BSD_DOM2_PGS_REG, 0x0D);
-    IO_WRITE(PI_BSD_DOM2_RLS_REG, 0x02);
+    IO_WRITE(PI_BSD_DOM2_LAT_REG, 0x40);
+    IO_WRITE(PI_BSD_DOM2_PWD_REG, 0x12);
+    IO_WRITE(PI_BSD_DOM2_PGS_REG, 0x07);
+    IO_WRITE(PI_BSD_DOM2_RLS_REG, 0x03);
 
-    while (dma_busy()) ;
+    dma_wait() ;
 
     PI_Init();
 
     sleep(250); //TODO: really... 1 second, changed to 250ms... better check it still works!
 
-    while (dma_busy()) ;
+    dma_wait() ;
 
     PI_DMAFromSRAM(buffer, 0, size) ;
 
-    while (dma_busy()) ;
+    dma_wait() ;
 
     IO_WRITE(PI_BSD_DOM2_LAT_REG, 0x40);
     IO_WRITE(PI_BSD_DOM2_PWD_REG, 0x12);
@@ -282,7 +282,7 @@ int setSRAM(  uint8_t *buffer,int size){
     PI_Init();
 
     data_cache_hit_writeback_invalidate(buffer,size);
-     while (dma_busy());
+    dma_wait();
     PI_DMAToSRAM(buffer, 0, size);
     data_cache_hit_writeback_invalidate(buffer,size);
 
@@ -351,15 +351,25 @@ PI_BSD_DOM1_PGS_REG (0x0460001C) write word 0x00008037
 PI_BSD_DOM1_RLS_REG (0x04600020) write word 0x00000803
 */
     // PI_DMAWait();
-    IO_WRITE(PI_BSD_DOM1_LAT_REG, 0x40);
-    IO_WRITE(PI_BSD_DOM1_PWD_REG, 0x12);
-    IO_WRITE(PI_BSD_DOM1_PGS_REG, 0x07);
-    IO_WRITE(PI_BSD_DOM1_RLS_REG, 0x03);
+    //IO_WRITE(PI_BSD_DOM1_LAT_REG, 0x40);
+    //IO_WRITE(PI_BSD_DOM1_PWD_REG, 0x12);
+    //IO_WRITE(PI_BSD_DOM1_PGS_REG, 0x07);
+    //IO_WRITE(PI_BSD_DOM1_RLS_REG, 0x03);
+//
+    //IO_WRITE(PI_BSD_DOM2_LAT_REG, 0x40);
+    //IO_WRITE(PI_BSD_DOM2_PWD_REG, 0x12);
+    //IO_WRITE(PI_BSD_DOM2_PGS_REG, 0x07);
+    //IO_WRITE(PI_BSD_DOM2_RLS_REG, 0x03);
 
+    IO_WRITE(PI_BSD_DOM1_LAT_REG, 0x40);
+    IO_WRITE(PI_BSD_DOM1_PWD_REG, 0x40);
+    IO_WRITE(PI_BSD_DOM1_PGS_REG, 0x40);
+    IO_WRITE(PI_BSD_DOM1_RLS_REG, 0x40);
+//
     IO_WRITE(PI_BSD_DOM2_LAT_REG, 0x40);
-    IO_WRITE(PI_BSD_DOM2_PWD_REG, 0x12);
-    IO_WRITE(PI_BSD_DOM2_PGS_REG, 0x07);
-    IO_WRITE(PI_BSD_DOM2_RLS_REG, 0x03);
+    IO_WRITE(PI_BSD_DOM2_PWD_REG, 0x40);
+    IO_WRITE(PI_BSD_DOM2_PGS_REG, 0x40);
+    IO_WRITE(PI_BSD_DOM2_RLS_REG, 0x40);
 }
 
 

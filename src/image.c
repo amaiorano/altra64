@@ -166,17 +166,18 @@ void drawImage(display_context_t dcon, sprite_t *sprite) {
     rdp_sync(SYNC_PIPE);
     rdp_set_default_clipping();
     rdp_enable_texture_copy();
-    rdp_attach_display(dcon);
+    //rdp_attach_display(dcon);
+    rdp_attach(dcon);
     // Draw image
     for (int j=0; j<sprite->vslices; j++) {
         x = 0;
         for (int i=0; i<sprite->hslices; i++) {
             rdp_sync(SYNC_PIPE);
             rdp_load_texture_stride(0, 0, MIRROR_DISABLED, sprite, j*sprite->hslices + i);
-            rdp_draw_sprite(0, x, y);
+            rdp_draw_sprite(0, x, y, MIRROR_DISABLED);
             x += 32;
         }
         y += 16;
     }
-    rdp_detach_display();
+    //rdp_detach_display();
 }

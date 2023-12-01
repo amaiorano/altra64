@@ -24,20 +24,57 @@
 #define SAVE_TYPE_FLASH 5
 
 #define DMA_BUFF_ADDR (ROM_LEN - 0x100000)
-
+#if 0
 #define REG_CFG 0
 #define REG_STATUS 1
 #define REG_DMA_LEN 2
 #define REG_DMA_RAM_ADDR 3
+
+#else
+// This is kept the same as the everdrive. No need to setup the TLB differently.
+#define DAISY_BASE_REGISTER 0xA8040000 
+enum DAISY_FW_FUNCTION {
+    GET_FW_VERSION,
+    ENABLE_MENU_FUNCTIONS,
+    DISABLE_MENU_FUNCTIONS,
+    SD_CARD_READ_SECTOR,
+    SD_CARD_WRITE_SECTOR,
+    UPLOAD_ROM,
+    UPLOAD_ROM_EX,
+    SET_SAVE_TYPE,
+};
+
+#define DAISY_STATUS_BIT_ROM_LOADING 0x00000001
+#define DAISY_STATUS_BIT_SD_BUSY     0x00000002
+#define DAISY_STATUS_BIT_MENU_MODE   0x00000004
+#define DAISY_STATUS_BIT_DMA_BUSY    0x00000008
+#define DAISY_STATUS_BIT_DMA_TIMEOUT 0x00000010
+#define DCFG_FIFO_TO_RAM 0
+#define DCFG_RAM_TO_FIFO 1
+
+enum DAISY_REGISTERS {
+    REG_STATUS,
+    REG_EXECUTE_FUNCTION,
+    REG_FUNCTION_PARAMETER,
+    REG_DMA_CFG,
+    REG_DMA_LEN,
+    REG_DMA_RAM_ADDR, // There are 512 bytes past this register to receive or send DMA.
+    REG_DMA_DATA
+};
+#endif
+
+u8 daisyDrive_uploadRom(char **Path, uint32_t *Offsets, uint32_t Count);
+
+#define REGS_BASE 0xA8040000
+#define REG_CFG 0
 #define REG_MSG 4
-#define REG_DMA_CFG 5
+//#define REG_DMA_CFG 5
 #define REG_SPI 6
 #define REG_SPI_CFG 7
 #define REG_KEY 8
 #define REG_SAV_CFG 9
 #define REG_SEC 10
 #define REG_VER 11
-
 
 #define REG_CFG_CNT 16
 #define REG_CFG_DAT 17
@@ -47,17 +84,13 @@
 
 #define DCFG_SD_TO_RAM 1
 #define DCFG_RAM_TO_SD 2
-#define DCFG_FIFO_TO_RAM 3
-#define DCFG_RAM_TO_FIFO 4
+//#define DCFG_FIFO_TO_RAM 3
+//#define DCFG_RAM_TO_FIFO 4
 
 #define ED_CFG_SDRAM_ON 0
 #define ED_CFG_SWAP 1
 #define ED_CFG_WR_MOD 2
 #define ED_CFG_WR_ADDR_MASK 3
-
-//new firmware load
-#define REGS_BASE 0xA8040000
-//--
 
 void evd_setCfgBit(u8 option, u8 state);
 

@@ -7,21 +7,65 @@
 /* storage control modules to the FatFs module with a defined API.       */
 /*-----------------------------------------------------------------------*/
 
-#include "diskio.h"		/* FatFs lower layer API */
+#include "ff.h"
+#include <diskio.h>		/* FatFs lower layer API */
+#include "diskio.h"
+#if 1
 #include "sd.h"
+#include "assert.h"
+#include "string.h"
+
+DSTATUS disk_status_daisydrive (void);
+DSTATUS disk_initialize_daisydrive (void);
+DRESULT disk_read_daisydrive (BYTE *buff, LBA_t sector, UINT count);
+DRESULT disk_write_daisydrive (
+	const BYTE *buff,	/* Data to be written */
+	LBA_t sector,		/* Start sector in LBA */
+	UINT count			/* Number of sectors to write */
+);
+DRESULT disk_ioctl_daisydrive (
+	BYTE cmd,		/* Control code */
+	void *buff		/* Buffer to send/receive control data */
+);
+
 
 /* Definitions of physical drive number for each drive */
 #define DEV_RAM		0	/* Example: Map Ramdisk to physical drive 0 */
 #define DEV_MMC		1	/* Example: Map MMC/SD card to physical drive 1 */
 #define DEV_USB		2	/* Example: Map USB MSD to physical drive 2 */
 
+//extern struct fat_disk_t;
+typedef struct
+{
+	DSTATUS (*disk_initialize)(void);
+	DSTATUS (*disk_status)(void);
+	DRESULT (*disk_read)(BYTE* buff, LBA_t sector, UINT count);
+	DRESULT (*disk_write)(const BYTE* buff, LBA_t sector, UINT count);
+	DRESULT (*disk_ioctl)(BYTE cmd, void* buff);
+} fat_disk_t;
 
+extern fat_disk_t fat_disks[1];
+
+static fat_disk_t fat_disk_daisydrive =
+{
+	disk_initialize_daisydrive,
+	disk_status_daisydrive,
+	disk_read_daisydrive,
+	disk_write_daisydrive,
+	disk_ioctl_daisydrive
+};
+
+void AltraDiskInit(void)
+{
+	assert(sizeof(fat_disks) == sizeof(fat_disk_daisydrive));
+	memcpy(fat_disks, &fat_disk_daisydrive, sizeof(fat_disks[0]));
+}
 /*-----------------------------------------------------------------------*/
 /* Get Drive Status                                                      */
 /*-----------------------------------------------------------------------*/
 
-DSTATUS disk_status (
-	BYTE pdrv		/* Physical drive nmuber to identify the drive */
+DSTATUS disk_status_daisydrive (
+	void		/* Physical drive nmuber to identify the drive */
 )
 {
 	DSTATUS stat;
@@ -51,10 +95,10 @@ DSTATUS disk_status (
 	// }
 	// return STA_NOINIT;
 
-	if(pdrv)
-    {
-        return STA_NOINIT;  
-    }
+	//if(pdrv)
+    //{
+    //    return STA_NOINIT;  
+    //}
     return RES_OK;
 }
 
@@ -64,8 +108,8 @@ DSTATUS disk_status (
 /* Initialize a Drive                                                    */
 /*-----------------------------------------------------------------------*/
 
-DSTATUS disk_initialize (
-	BYTE pdrv				/* Physical drive nmuber to identify the drive */
+DSTATUS disk_initialize_daisydrive (
+	void				/* Physical drive nmuber to identify the drive */
 )
 {
 	DSTATUS stat;
@@ -118,10 +162,9 @@ DSTATUS disk_initialize (
 /* Read Sector(s)                                                        */
 /*-----------------------------------------------------------------------*/
 
-DRESULT disk_read (
-	BYTE pdrv,		/* Physical drive nmuber to identify the drive */
+DRESULT disk_read_daisydrive (
 	BYTE *buff,		/* Data buffer to store read data */
-	DWORD sector,	/* Start sector in LBA */
+	LBA_t sector,	/* Start sector in LBA */
 	UINT count		/* Number of sectors to read */
 )
 {
@@ -158,13 +201,7 @@ DRESULT disk_read (
 	// }
 
 	// return RES_PARERR;
-
-    if (pdrv || !count)
-    {    
-        return RES_PARERR;  
-    }           
-
-	res = sdRead(sector, buff, count);
+	res = sdRead((unsigned long)sector, buff, count);
 		
     if(res == 0x00)
     {
@@ -182,10 +219,9 @@ DRESULT disk_read (
 /* Write Sector(s)                                                       */
 /*-----------------------------------------------------------------------*/
 
-DRESULT disk_write (
-	BYTE pdrv,			/* Physical drive nmuber to identify the drive */
+DRESULT disk_write_daisydrive (
 	const BYTE *buff,	/* Data to be written */
-	DWORD sector,		/* Start sector in LBA */
+	LBA_t sector,		/* Start sector in LBA */
 	UINT count			/* Number of sectors to write */
 )
 {
@@ -222,11 +258,6 @@ DRESULT disk_write (
 	// }
 
 	//return RES_PARERR;
-
-	if (pdrv || !count)
-    {    
-        return RES_PARERR;  
-    }
 	
 	res = sdWrite(sector, buff, count);
 	
@@ -246,8 +277,7 @@ DRESULT disk_write (
 /* Miscellaneous Functions                                               */
 /*-----------------------------------------------------------------------*/
 
-DRESULT disk_ioctl (
-	BYTE pdrv,		/* Physical drive nmuber (0..) */
+DRESULT disk_ioctl_daisydrive (
 	BYTE cmd,		/* Control code */
 	void *buff		/* Buffer to send/receive control data */
 )
@@ -298,3 +328,4 @@ DWORD get_fattime (void)
 	return 0;
 }
 
+#endif
